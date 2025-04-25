@@ -12,5 +12,6 @@ public class AutoPayloadPositioner implements BurpExtension {
         this.api = api;
         // Initialize Extension Properties like name
         api.extension().setName("Auto Payload Positioner");
+        api.logging().logToOutput("Simple Payload Positioner loaded Successfully!");
     }
 }
