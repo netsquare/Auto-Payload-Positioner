@@ -66,4 +66,17 @@ public class AutoPayloadPositioner implements BurpExtension {
         return null;
     }
 
+    private List<Range> findPositions(HttpRequest request) {
+        List<Range> positions = new ArrayList<>(); // this will store the positions
+        String requestString = request.toString(); // converting http request into string for parsing
+
+        // find parameter positions
+
+        // fins json parameters
+
+        // add header positions
+
+        return positions;
+    }
+
 }
