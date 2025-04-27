@@ -3,8 +3,10 @@ package com.netsquare;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
+import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
 
 import javax.swing.*;
 import java.awt.*;
@@ -31,7 +33,7 @@ public class AutoPayloadPositioner implements BurpExtension {
 
             JMenuItem menuItem1 = new JMenuItem("Body Only");
 
-            menuItem1.addActionListener(e -> processRequest(contextMenuEvent, false));
+            menuItem1.addActionListener(e -> processRequest(contextMenuEvent));
 
             menuItems.add(menuItem1);
 
@@ -40,8 +42,17 @@ public class AutoPayloadPositioner implements BurpExtension {
     }
 
 
-    public void processRequest(ContextMenuEvent contextMenuEvent, Boolean includeHeaders) {
+    public void processRequest(ContextMenuEvent contextMenuEvent) {
 
+    }
+
+    private HttpRequestResponse getRequestResponse(ContextMenuEvent contextMenuEvent) {
+        MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse().orElse(null);
+        if (repeaterRequestResponse != null && repeaterRequestResponse.requestResponse() != null) {
+            return repeaterRequestResponse.requestResponse();
+        }
+
+        return null;
     }
 
 }
