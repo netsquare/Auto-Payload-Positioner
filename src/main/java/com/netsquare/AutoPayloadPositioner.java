@@ -3,6 +3,8 @@ package com.netsquare;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.Range;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
@@ -43,7 +45,16 @@ public class AutoPayloadPositioner implements BurpExtension {
 
 
     public void processRequest(ContextMenuEvent contextMenuEvent) {
-
+        try {
+            // Getting the request response object using getRequestResponse() method
+            HttpRequestResponse requestResponse = getRequestResponse(contextMenuEvent);
+            // Fetching request from request response object
+            HttpRequest httpRequest = requestResponse.request();
+            // Getting position for payloads in http request using findPositions method
+            List<Range> positions = findPositions(httpRequest);
+        } catch (Exception e) {
+            api.logging().logToError(e.getStackTrace().toString());
+        }
     }
 
     private HttpRequestResponse getRequestResponse(ContextMenuEvent contextMenuEvent) {
