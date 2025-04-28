@@ -13,13 +13,17 @@ import burp.api.montoya.intruder.HttpRequestTemplate;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.swing.*;
 import java.awt.*;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.*;
 import java.util.List;
+import java.util.Map.Entry;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class AutoPayloadPositioner implements BurpExtension {
     private MontoyaApi api;
@@ -109,8 +113,8 @@ public class AutoPayloadPositioner implements BurpExtension {
         int methodStart = requestString.indexOf(method);
         if (methodStart >= 0) {
             positions.add(Range.range(
-               methodStart,
-               methodStart + method.length()
+                    methodStart,
+                    methodStart + method.length()
             ));
         }
 
@@ -141,10 +145,10 @@ public class AutoPayloadPositioner implements BurpExtension {
         }
 
         // --- get payload positions for all parameters (URL parameters, POST parameters) -- //
-        for (ParsedHttpParameter param: request.parameters()) {  // Using burp's in-built parameter parser to get the parameters
+        for (ParsedHttpParameter param : request.parameters()) {  // Using burp's in-built parameter parser to get the parameters
             positions.add(Range.range(
-               param.valueOffsets().startIndexInclusive(), // starting of parameter
-               param.valueOffsets().endIndexExclusive()     // ending of parameter
+                    param.valueOffsets().startIndexInclusive(), // starting of parameter
+                    param.valueOffsets().endIndexExclusive()     // ending of parameter
             ));
         }
 
@@ -191,7 +195,7 @@ public class AutoPayloadPositioner implements BurpExtension {
 
                             // calculate exact position in the request string
                             int pairStart = headerValue.indexOf(pair);
-                            if(pairStart >= 0) {
+                            if (pairStart >= 0) {
                                 int actualValueStart = valueStart + pairStart + equalPos + 1;
                                 int actualValueEnd = actualValueStart + value.length();
 
@@ -242,55 +246,428 @@ public class AutoPayloadPositioner implements BurpExtension {
 
     // -- Method to process JSON -- //
     private void processJsonBody(String requestBody, int requestBodyStart, List<Range> positions) {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode rootNode = mapper.readTree(requestBody);
 
+            // Process the json with jackson library
+            processJsonNode(rootNode, requestBody, requestBodyStart, positions);
+        } catch (JsonProcessingException e) {
+            // for any reasone if there is any error use the backup method to parse the json
+            fallbackJsonProcessing(requestBody, requestBodyStart, positions);
+        }
     }
 
     // -- Method to recursively process JSON nodes -- //
     private void processJsonNode(JsonNode node, String originalJson, int baseOffset, List<Range> positions) {
+        if (node.isObject()) {
+            // process object fields
+            Iterator<Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Entry<String, JsonNode> entry = fields.next();
+                String fieldName = entry.getKey();
+                JsonNode valueNode = entry.getValue();
 
+                // find the position of this field value in the original JSON
+                String fieldPattern = "\"" + Pattern.quote(fieldName) + "\"\\s*:\\s*";
+
+                if (valueNode.isValueNode()) {
+                    // handle the primitive value - stirngs, numbers, booleans, null
+                    String regex;
+                    boolean isString = valueNode.isTextual();
+
+                    if (isString) {
+                        regex = fieldPattern + "\"([^\"\\\\]*(\\\\.[^\"\\\\]*)*)\"";
+                    } else if (valueNode.isNumber()) {
+                        regex = fieldPattern + "([-+]?[0-9]*\\.?[0-9]+([eE][-+]?[0-9]+)?)";
+                    } else if (valueNode.isBoolean()) {
+                        regex = fieldPattern + "(true|false)";
+                    } else if (valueNode.isNull()) {
+                        regex = fieldPattern + "(null)";
+                    } else {
+                        continue; // Skip if we don't know the type
+                    }
+
+                    Pattern pattern = Pattern.compile(regex);
+                    Matcher matcher = pattern.matcher(originalJson);
+
+                    if (matcher.find()) {
+                        int valueStart = matcher.start(1);
+                        int valueEnd = matcher.end(1);
+
+                        // for strings, add payload positions between " " double quoates
+                        // if (isString) {
+                        //  positions.add(Range.range(baseOffset + valueStart, baseOffset + valueEnd));
+                        //} else {
+                        positions.add(Range.range(baseOffset + valueStart, baseOffset + valueEnd));
+                        //}
+                    }
+                } else if (valueNode.isContainerNode()) {
+                    // Recursively process nested objects and arrays
+                    processJsonNode(valueNode, originalJson, baseOffset, positions);
+                }
+            }
+        } else if (node.isArray()) {
+            // process array elements
+            for (int i = 0; i < node.size(); i++) {
+                JsonNode element = node.get(i);
+
+                if (element.isValueNode()) {
+                    // fidn positions of this array element
+                    String value = element.asText();
+                    if (element.isTextual()) {
+                        // try to find this string in the array context
+                        int startIdx = findArrayElementPosition(originalJson, value, i, true);
+                        if (startIdx >= 0) {
+                            // -- add in positions -- //
+                            positions.add(Range.range(baseOffset + startIdx, baseOffset + startIdx + value.length()));
+                        }
+                    } else {
+                        // non string primitve values
+                        int startIdx = findArrayElementPosition(originalJson, element.toString(), i, false);
+                        if (startIdx >= 0) {
+                            positions.add(Range.range(baseOffset + startIdx, baseOffset + startIdx + element.toString().length()));
+                        }
+                    }
+                } else if (element.isContainerNode()) {
+                    // -- recursively process nested objects and arrays -- //
+                    processJsonNode(element, originalJson, baseOffset, positions);
+                }
+            }
+        }
     }
-
 
     // -- helper method to find array element positions in the original JSON string -- //
     private int findArrayElementPosition(String json, String value, int index, boolean isString) {
-        return 0;
+        Pattern arrayElementPattern;
+        if (isString) {
+            arrayElementPattern = Pattern.compile("\\[\\s*(?:[^\\[\\]]*,\\s*){" + index + "}\"([^\"\\\\]*(\\\\.[^\"\\\\]*)*)\""
+                    + (index < Integer.MAX_VALUE - 1 ? "(?:,|\\])" : ""));
+        } else {
+            arrayElementPattern = Pattern.compile("\\[\\s*(?:[^\\[\\]]*,\\s*){" + index + "}(" + Pattern.quote(value) + ")"
+                    + (index < Integer.MAX_VALUE - 1 ? "(?:,|\\])" : ""));
+        }
+
+        Matcher matcher = arrayElementPattern.matcher(json);
+        if (matcher.find()) {
+            return matcher.start(1);
+        }
+        // -- if no found then return -1 to prevent addition in positions -- //
+        return -1;
     }
 
     // -- backup method, in case jackson library fails to parse json for any reason, use regex for json parsing -- //
-    private void fallbackJsonProcessing(String requestBody, int bodyStart, List<Range> positions) {}
+    private void fallbackJsonProcessing(String requestBody, int bodyStart, List<Range> positions) {
+        try {
+            fallbackProcessJsonRecursively(requestBody, 0, bodyStart, positions, 0);
+        } catch (Exception e) {
+            api.logging().logToError("Error fallback json processing: \n " + Arrays.toString(e.getStackTrace()));
+        }
+    }
 
     // -- backup method to process json recursively -- //
-    private void fallbackProcessJsonRecursively(String json, int startInJson, int baseOffset, List<Range> positions, int depth) {}
+    private void fallbackProcessJsonRecursively(String json, int startInJson, int baseOffset, List<Range> positions, int depth) {
+        if (depth > 10) return; // prevent too deep recursion to prevent crash
+
+        // Pattern for basic JSON Key-value pairs
+        Pattern keyValuePattern = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(\"[^\"]*\"|\\d+(\\.\\d+)?|true|false|null|\\{|\\[)");
+        Matcher matcher = keyValuePattern.matcher(json);
+        matcher.region(startInJson, json.length());
+
+        while (matcher.find()) {
+            String key = matcher.group(1);
+            String valueStart = matcher.group(2);
+            int valueStartPos = matcher.start(2);
+            int valueEndPos;
+
+            // handle different types of values
+            if (valueStart.equals("{")) {
+                // process the json object
+                valueEndPos = findMatchingCloseBrace(json, valueStartPos);
+                if (valueEndPos > valueStartPos) {
+                    // process the nested object
+                    fallbackProcessJsonRecursively(json, valueStartPos + 1, baseOffset, positions, depth + 1);
+                }
+            } else if (valueStart.equals("[")) {
+                // process json array
+                valueEndPos = findMatchingCloseBracket(json, valueStartPos);
+                if (valueEndPos > valueStartPos) {
+                    // process array contents
+                    processJsonArray(json, valueStartPos + 1, valueEndPos, baseOffset, positions, depth + 1);
+                }
+            } else if (valueStart.startsWith("\"") && valueStart.endsWith("\"")) {
+                // process string value
+                valueEndPos = matcher.end(2);
+                // add position for string content without quotes
+                positions.add(Range.range(baseOffset + valueStartPos + 1, baseOffset + valueEndPos - 1));
+            } else {
+                // process number, boolean and null
+                valueEndPos = matcher.end(2);
+                positions.add(Range.range(baseOffset + valueStartPos, baseOffset + valueEndPos));
+            }
+        }
+    }
 
     // -- process json array -- //
-    private void processJsonArray(String json, int startPos, int endPos, int baseOffset, List<Range> positions, int depth) {}
+    private void processJsonArray(String json, int startPos, int endPos, int baseOffset, List<Range> positions, int depth) {
+        if (depth > 10) return; // avoid deep recursion to prevent crash
+
+        // array element detection logic
+        int pos = startPos;
+        while (pos < endPos) {
+            // skip whitespace
+            while (pos < endPos && Character.isWhitespace(json.charAt(pos))) pos++;
+            if (pos >= endPos) break;
+
+            char c = json.charAt(pos);
+            switch (c) {
+                case ',':
+                    pos++;
+
+                case '"':
+                    // string value
+                    int closeQuote = findClosingQuote(json, pos + 1);
+                    if (closeQuote > pos) {
+                        positions.add(Range.range(baseOffset + pos + 1, baseOffset + closeQuote));
+                        pos = closeQuote + 1;
+                    } else {
+                        pos++;
+                    }
+                case '{':
+                    // object in array
+                    int closePos = findMatchingCloseBrace(json, pos);
+                    if (closePos > pos) {
+                        fallbackProcessJsonRecursively(json, pos + 1, baseOffset, positions, depth + 1);
+                        pos = closePos + 1;
+                    } else {
+                        pos++;
+                    }
+                case '[':
+                    // nested array
+                    int closePosForBracket = findMatchingCloseBracket(json, pos);
+                    if (closePosForBracket > pos) {
+                        processJsonArray(json, pos + 1, closePosForBracket, baseOffset, positions, depth + 1);
+                        pos = closePosForBracket + 1;
+                    } else {
+                        pos++;
+                    }
+                default:
+                    // number boolean and null
+                    int valueEnd = pos;
+                    while (valueEnd < endPos && !",]}".contains(String.valueOf(json.charAt(valueEnd))) &&
+                            !Character.isWhitespace(json.charAt(valueEnd))) {
+                        valueEnd++;
+                    }
+                    if (valueEnd > pos) {
+                        positions.add(Range.range(baseOffset + pos, baseOffset + valueEnd));
+                        pos = valueEnd;
+                    } else {
+                        pos++;
+                    }
+            }
+        }
+    }
 
     // -- helper method to find matching close brace  -- //
     private int findMatchingCloseBrace(String json, int openPos) {
-        return 0;
+        int depth = 1;
+        int pos = openPos + 1;
+        while (pos < json.length() && depth > 0) {
+            char c = json.charAt(pos);
+            switch (c) {
+                case '{': depth++;
+                case '}': depth--;
+                case '"':
+                    // skip the string content
+                    int closeQuote = findClosingQuote(json, pos+1);
+                    if (closeQuote > pos) {
+                        pos = closeQuote;
+                    }
+            }
+            pos++;
+        }
+        return depth == 0 ? pos - 1: - 1;
     }
 
     // -- helper method to find matching close bracket -- //
-    private int findMachingCloseBracket(String json, int openPos) {
-        return 0;
+    private int findMatchingCloseBracket(String json, int openPos) {
+        int depth = 1;
+        int pos = openPos + 1;
+        while (pos < json.length() && depth > 0) {
+            char c = json.charAt(pos);
+            switch (c) {
+                case '[': depth++;
+                case ']': depth--;
+                case '"':
+                    // skipt string
+                    int closeQuote = findClosingQuote(json, pos + 1);
+                    if (closeQuote > pos) {
+                        pos = closeQuote;
+                    }
+            }
+            pos++;
+        }
+        return depth == 0 ? pos - 1: -1;
+    }
+
+    // -- helper method to find closing quoate '"' character -- //
+    private int findClosingQuote(String json, int start) {
+        int pos = start;
+        while (pos < json.length()) {
+            char c = json.charAt(pos);
+            switch (c) {
+                case '\\': pos += 2; // skip escape character
+                case '"': return pos;
+                default: pos++;
+            }
+        }
+        return -1;
     }
 
     // -- Method to process XML -- //
     private void processXmlBody(String requestBody, int requestBodyStart, List<Range> positions) {
+        try {
+            // xml parsing for tab based content
+            Pattern tagPattern = Pattern.compile("<([^\\s/>]+)[^>]*>(.*?)</\\1>|<([^\\s/>]+)\\s+([^>]*)/>|<([^\\s/>]+)[^>]*>([^<]*)</\\5>");
+            Matcher matcher = tagPattern.matcher(requestBody);
 
+            while (matcher.find()) {
+                // handle self-closing tags with attributes
+                if (matcher.group(3) != null && matcher.group(4) != null) {
+                    String attributes = matcher.group(4);
+                    processXmlAttributes(attributes, matcher.start(4) + requestBodyStart, positions);
+                }
+                // handle start-end tags with attributes and content
+                else if (matcher.group(1) != null) {
+                    String content = matcher.group(2);
+
+                    // Add position for tag content if it's not empty and doesn't contain nested tags
+                    if (!content.trim().isEmpty() && !content.contains("<")) {
+                        positions.add(Range.range(
+                                requestBodyStart + matcher.start(2),
+                                requestBodyStart + matcher.end(2)
+                        ));
+                    }
+
+                    // process attributes in opening tag
+                    int tagEnd = requestBody.indexOf('>', matcher.start());
+                    if (tagEnd > matcher.start()) {
+                        String openingTag = requestBody.substring(matcher.start(), tagEnd);
+                        int attrStart = openingTag.indexOf(' ');
+                        if (attrStart > 0) {
+                            String attributes = openingTag.substring(attrStart + 1);
+                            processXmlAttributes(attributes, matcher.start() + attrStart + 1 + requestBodyStart, positions);
+                        }
+                    }
+
+                    // recursively process nested tags
+                    if (content.contains("<")) {
+                        processXmlBody(content, requestBodyStart + matcher.start(2), positions);
+                    }
+                }
+                // handle simple tags with content
+                else if (matcher.group(5) != null && matcher.group(6) != null) {
+                    String content = matcher.group(6);
+                    if (!content.trim().isEmpty()) {
+                        positions.add(Range.range(
+                           requestBodyStart + matcher.start(6),
+                                requestBodyStart + matcher.end(6)
+                        ));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            api.logging().logToError("Error processing XML body: \n" + Arrays.toString(e.getStackTrace()));
+        }
     }
 
     // -- method to process xml attributes -- //
     private void processXmlAttributes(String attributes, int baseOffset, List<Range> positions) {
+        // pattern for attributes like name="value" or name='value'
+        Pattern attrPattern = Pattern.compile("(\\w+)\\s*=\\s*([\"'])(.*?)\\2");
+        Matcher matcher = attrPattern.matcher(attributes);
 
+        while (matcher.find()) {
+            int valueStart = matcher.start(3);
+            int valueEnd = matcher.end(3);
+            positions.add(Range.range(
+                    baseOffset + valueStart,
+                    baseOffset + valueEnd
+            ));
+        }
     }
 
     // -- process embedded data -- //
     private void processEmbeddedFormats(String requestBody, int requestBodyStart, List<Range> positions) {
+        // look for json object or arrays embedded in other content
+        Pattern jsonPattern = Pattern.compile("\\{[^\\{\\}]*\\}|\\[[^\\[\\]]*\\]");
+        Matcher jsonMatcher = jsonPattern.matcher(requestBody);
 
+        while (jsonMatcher.find()) {
+            String jsonCandidate = jsonMatcher.group();
+            if ((jsonCandidate.startsWith("{") && jsonCandidate.endsWith("}")) ||
+                    (jsonCandidate.startsWith("[") && jsonCandidate.endsWith("]"))) {
+                // process this json
+                processJsonBody(jsonCandidate, requestBodyStart + jsonMatcher.start(), positions);
+            }
+        }
+
+        // xml liek structure
+        if (requestBody.contains("<") && requestBody.contains(">")) {
+            Pattern xmlPattern = Pattern.compile("<[^>]+>[^<]*</[^>]+>|<[^>]+/>");
+            Matcher xmlMatcher = xmlPattern.matcher(requestBody);
+
+            while (xmlMatcher.find()) {
+                String xmlCandidate = xmlMatcher.group();
+                // process this xml
+                processXmlBody(xmlCandidate, requestBodyStart + xmlMatcher.start(), positions);
+            }
+        }
+
+        // look for key=value pairs in non-json non-xml content
+        Pattern keyValuePattern = Pattern.compile("([\\w\\-]+)=([^&\\s]+)");
+        Matcher keyValueMatcher = keyValuePattern.matcher(requestBody);
+
+        while (keyValueMatcher.find()) {
+            positions.add(Range.range(
+                    requestBodyStart + keyValueMatcher.start(2),
+                    requestBodyStart + keyValueMatcher.end(2)
+            ));
+        }
     }
 
     // -- validate the positions -- //
-    private List<Range> validatePositions(List<Range> ranegs, int maxLength) {}
+    private List<Range> validatePositions(List<Range> ranges, int maxLength) {
+        List<Range> validRanges = new ArrayList<>();
+        Set<Integer> usedPositions = new HashSet<>();
 
+        // sort the positions by index
+        ranges.sort(Comparator.comparingInt(Range::startIndexInclusive));
+
+        for (Range range : ranges) {
+            // skip invalid ranges
+            if (range.startIndexInclusive() < 0 ||
+                    range.endIndexExclusive() > maxLength ||
+                    range.startIndexInclusive() >= range.endIndexExclusive()) {
+                continue;
+            }
+
+            // check for overlaps
+            boolean hasOverlap = false;
+            for (int pos = range.startIndexInclusive(); pos < range.endIndexExclusive(); pos++) {
+                if (usedPositions.contains(pos)) {
+                    hasOverlap = true;
+                    break;
+                }
+            }
+
+            if(!hasOverlap) {
+                validRanges.add(range);
+                for (int pos = range.startIndexInclusive(); pos < range.endIndexExclusive(); pos++) {
+                    usedPositions.add(pos);
+                }
+            }
+        }
+        return validRanges;
+    }
 }
