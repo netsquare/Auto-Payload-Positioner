@@ -4,6 +4,7 @@ package com.netsquare;
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Range;
+import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
@@ -58,11 +59,18 @@ public class AutoPayloadPositioner implements BurpExtension {
     }
 
     private HttpRequestResponse getRequestResponse(ContextMenuEvent contextMenuEvent) {
-        MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse().orElse(null);
-        if (repeaterRequestResponse != null && repeaterRequestResponse.requestResponse() != null) {
-            return repeaterRequestResponse.requestResponse();
+        List<HttpRequestResponse> selectedItems = contextMenuEvent.selectedRequestResponses(); // apart from repeater this will be used to get request from other tabs likes proxy history tabs
+
+        if (!selectedItems.isEmpty()) { // if user has selected multiple requests from logs, select only first one
+            return selectedItems.get(0);
         }
 
+        if (contextMenuEvent.isFromTool(ToolType.REPEATER)) { // handle the repeater request normally
+            MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse().orElse(null);
+            if (repeaterRequestResponse != null && repeaterRequestResponse.requestResponse() != null) {
+                return repeaterRequestResponse.requestResponse();
+            }
+        }
         return null;
     }
 
@@ -78,5 +86,7 @@ public class AutoPayloadPositioner implements BurpExtension {
 
         return positions;
     }
+
+
 
 }
