@@ -72,8 +72,7 @@ public class AutoPayloadPositioner implements BurpExtension {
                     // Visual feedback
                     menuItem1.setEnabled(false);
 
-                    SwingUtilities.invokeLater(() ->
-                            api.logging().logToOutput("Auto Payload Positioner: Processing request..."));
+                    api.logging().logToOutput("Auto Payload Positioner: Processing request...");
 
                     submitProcessingTask(contextMenuEvent, menuItem1);
                 }
@@ -106,23 +105,16 @@ public class AutoPayloadPositioner implements BurpExtension {
             try {
                 // Wait for the processing to complete with timeout
                 future.get(15, TimeUnit.SECONDS);
-
-                SwingUtilities.invokeLater(() ->
-                        api.logging().logToOutput("Auto Payload Positioner: Processing completed successfully"));
+                api.logging().logToOutput("Auto Payload Positioner: Processing completed successfully");
 
             } catch (TimeoutException e) {
                 // Cancel the processing task if it times out
                 future.cancel(true);
-
-                SwingUtilities.invokeLater(() ->
-                        api.logging().logToOutput("Auto Payload Positioner: Processing timed out - request might be too complex"));
+                api.logging().logToOutput("Auto Payload Positioner: Processing timed out - request might be too complex");
 
                 api.logging().logToError("Processing timed out");
 
             } catch (Exception e) {
-                SwingUtilities.invokeLater(() ->
-                        api.logging().logToOutput("Auto Payload Positioner: Processing error - " + e.getMessage()));
-
                 api.logging().logToError("Error waiting for processing task: " + e.getMessage());
             } finally {
                 // Always reset processing state and re-enable menu item
@@ -133,7 +125,6 @@ public class AutoPayloadPositioner implements BurpExtension {
             }
         });
     }
-
 
 
     public void processRequest(ContextMenuEvent contextMenuEvent) {
@@ -177,7 +168,7 @@ public class AutoPayloadPositioner implements BurpExtension {
             return selectedItems.get(0);
         }
 
-        if (contextMenuEvent.isFromTool(ToolType.REPEATER) || contextMenuEvent.isFromTool(ToolType.LOGGER)  || contextMenuEvent.isFromTool(ToolType.PROXY) || contextMenuEvent.isFromTool(ToolType.TARGET) || contextMenuEvent.isFromTool(ToolType.SCANNER)) { // handle the repeater request normally
+        if (contextMenuEvent.isFromTool(ToolType.REPEATER) || contextMenuEvent.isFromTool(ToolType.LOGGER) || contextMenuEvent.isFromTool(ToolType.PROXY) || contextMenuEvent.isFromTool(ToolType.TARGET) || contextMenuEvent.isFromTool(ToolType.SCANNER)) { // handle the repeater request normally
             MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse().orElse(null);
             if (repeaterRequestResponse != null && repeaterRequestResponse.requestResponse() != null) {
                 return repeaterRequestResponse.requestResponse();
@@ -557,18 +548,20 @@ public class AutoPayloadPositioner implements BurpExtension {
         while (pos < json.length() && depth > 0) {
             char c = json.charAt(pos);
             switch (c) {
-                case '{': depth++;
-                case '}': depth--;
+                case '{':
+                    depth++;
+                case '}':
+                    depth--;
                 case '"':
                     // skip the string content
-                    int closeQuote = findClosingQuote(json, pos+1);
+                    int closeQuote = findClosingQuote(json, pos + 1);
                     if (closeQuote > pos) {
                         pos = closeQuote;
                     }
             }
             pos++;
         }
-        return depth == 0 ? pos - 1: - 1;
+        return depth == 0 ? pos - 1 : -1;
     }
 
     // -- helper method to find matching close bracket -- //
@@ -578,8 +571,10 @@ public class AutoPayloadPositioner implements BurpExtension {
         while (pos < json.length() && depth > 0) {
             char c = json.charAt(pos);
             switch (c) {
-                case '[': depth++;
-                case ']': depth--;
+                case '[':
+                    depth++;
+                case ']':
+                    depth--;
                 case '"':
                     // skipt string
                     int closeQuote = findClosingQuote(json, pos + 1);
@@ -589,7 +584,7 @@ public class AutoPayloadPositioner implements BurpExtension {
             }
             pos++;
         }
-        return depth == 0 ? pos - 1: -1;
+        return depth == 0 ? pos - 1 : -1;
     }
 
     // -- helper method to find closing quoate '"' character -- //
@@ -598,9 +593,12 @@ public class AutoPayloadPositioner implements BurpExtension {
         while (pos < json.length()) {
             char c = json.charAt(pos);
             switch (c) {
-                case '\\': pos += 2; // skip escape character
-                case '"': return pos;
-                default: pos++;
+                case '\\':
+                    pos += 2; // skip escape character
+                case '"':
+                    return pos;
+                default:
+                    pos++;
             }
         }
         return -1;
@@ -652,7 +650,7 @@ public class AutoPayloadPositioner implements BurpExtension {
                     String content = matcher.group(6);
                     if (!content.trim().isEmpty()) {
                         positions.add(Range.range(
-                           requestBodyStart + matcher.start(6),
+                                requestBodyStart + matcher.start(6),
                                 requestBodyStart + matcher.end(6)
                         ));
                     }
