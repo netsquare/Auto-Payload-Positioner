@@ -22,11 +22,18 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 import java.util.Map.Entry;
+import java.util.concurrent.Callable;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+
 public class AutoPayloadPositioner implements BurpExtension {
     private MontoyaApi api;
+    private final ExecutorService executorService = Executors.newCachedThreadPool();
+    private final AtomicBoolean isProcessing = new AtomicBoolean(false);
+
 
     @Override
     public void initialize(MontoyaApi api) {
@@ -36,6 +43,18 @@ public class AutoPayloadPositioner implements BurpExtension {
         // Register Context Menu Items Provider to user interface
         api.userInterface().registerContextMenuItemsProvider(new PayloadPositionMenuProvider());
         api.logging().logToOutput("Auto Payload Positioner loaded Successfully! \n by https://net-square.com/");
+
+        // Register unloading handler to clean up threads
+        api.extension().registerUnloadingHandler(() -> {
+            executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(2, TimeUnit.SECONDS)) {
+                    executorService.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+            }
+        });
     }
 
     private class PayloadPositionMenuProvider implements ContextMenuItemsProvider {
@@ -45,13 +64,76 @@ public class AutoPayloadPositioner implements BurpExtension {
 
             JMenuItem menuItem1 = new JMenuItem("Set Auto Positions");
 
-            menuItem1.addActionListener(e -> processRequest(contextMenuEvent));
+            // Update menu item based on processing state
+            menuItem1.setEnabled(!isProcessing.get());
+
+            menuItem1.addActionListener(e -> {
+                if (isProcessing.compareAndSet(false, true)) {
+                    // Visual feedback
+                    menuItem1.setEnabled(false);
+
+                    SwingUtilities.invokeLater(() ->
+                            api.logging().logToOutput("Auto Payload Positioner: Processing request..."));
+
+                    submitProcessingTask(contextMenuEvent, menuItem1);
+                }
+            });
 
             menuItems.add(menuItem1);
-
             return menuItems;
         }
     }
+
+    private void submitProcessingTask(ContextMenuEvent contextMenuEvent, JMenuItem menuItem) {
+        // Create a callable task that will process the request
+        Callable<Void> processingTask = () -> {
+            try {
+                processRequest(contextMenuEvent);
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    api.logging().logToError("Error processing request: " + e.getMessage());
+                    api.logging().logToOutput("Auto Payload Positioner: Error occurred during processing");
+                });
+            }
+            return null;
+        };
+
+        // Submit the task to the executor with timeout
+        Future<Void> future = executorService.submit(processingTask);
+
+        // Start another thread to monitor the future with timeout
+        executorService.submit(() -> {
+            try {
+                // Wait for the processing to complete with timeout
+                future.get(15, TimeUnit.SECONDS);
+
+                SwingUtilities.invokeLater(() ->
+                        api.logging().logToOutput("Auto Payload Positioner: Processing completed successfully"));
+
+            } catch (TimeoutException e) {
+                // Cancel the processing task if it times out
+                future.cancel(true);
+
+                SwingUtilities.invokeLater(() ->
+                        api.logging().logToOutput("Auto Payload Positioner: Processing timed out - request might be too complex"));
+
+                api.logging().logToError("Processing timed out");
+
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() ->
+                        api.logging().logToOutput("Auto Payload Positioner: Processing error - " + e.getMessage()));
+
+                api.logging().logToError("Error waiting for processing task: " + e.getMessage());
+            } finally {
+                // Always reset processing state and re-enable menu item
+                SwingUtilities.invokeLater(() -> {
+                    isProcessing.set(false);
+                    menuItem.setEnabled(true);
+                });
+            }
+        });
+    }
+
 
 
     public void processRequest(ContextMenuEvent contextMenuEvent) {
@@ -367,11 +449,11 @@ public class AutoPayloadPositioner implements BurpExtension {
 
     // -- backup method to process json recursively -- //
     private void fallbackProcessJsonRecursively(String json, int startInJson, int baseOffset, List<Range> positions, int depth) {
-        if (depth > 10) return; // prevent too deep recursion to prevent crash
+        if (depth > 1) return; // prevent too deep recursion to prevent crash
 
         // Pattern for basic JSON Key-value pairs
-        Pattern keyValuePattern = Pattern.compile("\"([^\"]+)\"\\s*:\\s*(\"[^\"]*\"|\\d+(\\.\\d+)?|true|false|null|\\{|\\[)");
-        Matcher matcher = keyValuePattern.matcher(json);
+        Pattern keyPattern = Pattern.compile("\"([^\"]+)\"\\s*:");
+        Matcher matcher = keyPattern.matcher(json);
         matcher.region(startInJson, json.length());
 
         while (matcher.find()) {
@@ -410,7 +492,7 @@ public class AutoPayloadPositioner implements BurpExtension {
 
     // -- process json array -- //
     private void processJsonArray(String json, int startPos, int endPos, int baseOffset, List<Range> positions, int depth) {
-        if (depth > 10) return; // avoid deep recursion to prevent crash
+        if (depth > 1) return; // avoid deep recursion to prevent crash
 
         // array element detection logic
         int pos = startPos;
@@ -638,36 +720,36 @@ public class AutoPayloadPositioner implements BurpExtension {
 
     // -- validate the positions -- //
     private List<Range> validatePositions(List<Range> ranges, int maxLength) {
-        List<Range> validRanges = new ArrayList<>();
-        Set<Integer> usedPositions = new HashSet<>();
-
-        // sort the positions by index
+        // Sort by start index
         ranges.sort(Comparator.comparingInt(Range::startIndexInclusive));
 
-        for (Range range : ranges) {
-            // skip invalid ranges
-            if (range.startIndexInclusive() < 0 ||
-                    range.endIndexExclusive() > maxLength ||
-                    range.startIndexInclusive() >= range.endIndexExclusive()) {
+        List<Range> validRanges = new ArrayList<>();
+        Range current = ranges.get(0);
+
+        // Basic validation of the first range
+        if (current.startIndexInclusive() >= 0 &&
+                current.endIndexExclusive() <= maxLength &&
+                current.startIndexInclusive() < current.endIndexExclusive()) {
+            validRanges.add(current);
+        }
+
+        // Check remaining ranges with O(n) complexity instead of O(n*m)
+        for (int i = 1; i < ranges.size(); i++) {
+            Range next = ranges.get(i);
+
+            // Skip invalid ranges
+            if (next.startIndexInclusive() < 0 ||
+                    next.endIndexExclusive() > maxLength ||
+                    next.startIndexInclusive() >= next.endIndexExclusive()) {
                 continue;
             }
 
-            // check for overlaps
-            boolean hasOverlap = false;
-            for (int pos = range.startIndexInclusive(); pos < range.endIndexExclusive(); pos++) {
-                if (usedPositions.contains(pos)) {
-                    hasOverlap = true;
-                    break;
-                }
-            }
-
-            if(!hasOverlap) {
-                validRanges.add(range);
-                for (int pos = range.startIndexInclusive(); pos < range.endIndexExclusive(); pos++) {
-                    usedPositions.add(pos);
-                }
+            // Check for overlap with previous valid range
+            if (next.startIndexInclusive() >= validRanges.get(validRanges.size() - 1).endIndexExclusive()) {
+                validRanges.add(next);
             }
         }
+
         return validRanges;
     }
 }
