@@ -7,6 +7,7 @@ import burp.api.montoya.core.Range;
 import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.intruder.HttpRequestTemplate;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
@@ -14,6 +15,7 @@ import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class AutoPayloadPositioner implements BurpExtension {
@@ -53,8 +55,29 @@ public class AutoPayloadPositioner implements BurpExtension {
             HttpRequest httpRequest = requestResponse.request();
             // Getting position for payloads in http request using findPositions method
             List<Range> positions = findPositions(httpRequest);
+
+            if (positions.isEmpty()) {
+                return; // if positions are 0 which is very unlikely to happen but somehow if they are 0 then return, this may occur is all payload positions are 0 byte which are not allowed by montoya api
+            }
+
+            // constructing a request template to send it to intruder tab, httpRequest is the request to sent along with payload positions locations
+            HttpRequestTemplate httpRequestTemplate = new HttpRequestTemplate() {
+                @Override
+                public burp.api.montoya.core.ByteArray content() {
+                    return httpRequest.toByteArray();
+                }
+
+                @Override
+                public List<Range> insertionPointOffsets() {
+                    return positions;
+                }
+            };
+
+            // After constructing the http request template, send it to intruder tab
+            api.intruder().sendToIntruder(requestResponse.httpService(), httpRequestTemplate);
+
         } catch (Exception e) {
-            api.logging().logToError(e.getStackTrace().toString());
+            api.logging().logToError("Error occured in processRequest() : \n" + Arrays.toString(e.getStackTrace()));
         }
     }
 
