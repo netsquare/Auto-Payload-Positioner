@@ -35,7 +35,7 @@ public class AutoPayloadPositioner implements BurpExtension {
         api.extension().setName("Auto Payload Positioner by Net-Square");
         // Register Context Menu Items Provider to user interface
         api.userInterface().registerContextMenuItemsProvider(new PayloadPositionMenuProvider());
-        api.logging().logToOutput("Simple Payload Positioner loaded Successfully!");
+        api.logging().logToOutput("Auto Payload Positioner loaded Successfully! \n by https://net-square.com/");
     }
 
     private class PayloadPositionMenuProvider implements ContextMenuItemsProvider {
@@ -43,7 +43,7 @@ public class AutoPayloadPositioner implements BurpExtension {
         public List<Component> provideMenuItems(ContextMenuEvent contextMenuEvent) {
             List<Component> menuItems = new ArrayList<>();
 
-            JMenuItem menuItem1 = new JMenuItem("Body Only");
+            JMenuItem menuItem1 = new JMenuItem("Set Auto Positions");
 
             menuItem1.addActionListener(e -> processRequest(contextMenuEvent));
 
@@ -95,7 +95,7 @@ public class AutoPayloadPositioner implements BurpExtension {
             return selectedItems.get(0);
         }
 
-        if (contextMenuEvent.isFromTool(ToolType.REPEATER)) { // handle the repeater request normally
+        if (contextMenuEvent.isFromTool(ToolType.REPEATER) || contextMenuEvent.isFromTool(ToolType.LOGGER)  || contextMenuEvent.isFromTool(ToolType.PROXY) || contextMenuEvent.isFromTool(ToolType.TARGET) || contextMenuEvent.isFromTool(ToolType.SCANNER)) { // handle the repeater request normally
             MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse().orElse(null);
             if (repeaterRequestResponse != null && repeaterRequestResponse.requestResponse() != null) {
                 return repeaterRequestResponse.requestResponse();
