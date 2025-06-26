@@ -1,6 +1,5 @@
 package com.netsquare;
 
-
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Range;
@@ -22,18 +21,41 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 import java.util.Map.Entry;
-import java.util.concurrent.Callable;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 
 public class AutoPayloadPositioner implements BurpExtension {
     private MontoyaApi api;
     private final ExecutorService executorService = Executors.newCachedThreadPool();
     private final AtomicBoolean isProcessing = new AtomicBoolean(false);
 
+    private enum PayloadPositionMode {
+        DEFAULT("Default (No HTTP Method)"),
+        DEFAULT_FULL_PATH("Default + Full URL Path"),
+        EVERYTHING("Everything (Default + HTTP Method)"),
+        EVERYTHING_FULL_PATH("Everything + Full URL Path"),
+        HEADERS_ONLY("Headers Only"),
+        HEADERS_METHOD("Headers + Method"),
+        HEADERS_URL_LAST("Headers + URL Path Last Part"),
+        HEADERS_URL_LAST_METHOD("Headers + URL Path Last Part + Method"),
+        HEADERS_FULL_PATH("Headers + Full URL Path"),
+        HEADERS_FULL_PATH_METHOD("Headers + Full URL Path + Method");
+
+        private final String displayName;
+
+        PayloadPositionMode(String displayName) {
+            this.displayName = displayName;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
+        }
+    }
+
+    private PayloadPositionMode selectedMode = PayloadPositionMode.DEFAULT;
 
     @Override
     public void initialize(MontoyaApi api) {
@@ -57,32 +79,30 @@ public class AutoPayloadPositioner implements BurpExtension {
         });
     }
 
-    private class PayloadPositionMenuProvider implements ContextMenuItemsProvider {
-        @Override
-        public List<Component> provideMenuItems(ContextMenuEvent contextMenuEvent) {
-            List<Component> menuItems = new ArrayList<>();
+private class PayloadPositionMenuProvider implements ContextMenuItemsProvider {
+    @Override
+    public List<Component> provideMenuItems(ContextMenuEvent contextMenuEvent) {
+        List<Component> menuItems = new ArrayList<>();
 
-            JMenuItem menuItem1 = new JMenuItem("Set Auto Positions");
-
-            // Update menu item based on processing state
-            menuItem1.setEnabled(!isProcessing.get());
-
-            menuItem1.addActionListener(e -> {
+        for (PayloadPositionMode mode : PayloadPositionMode.values()) {
+            JMenuItem modeItem = new JMenuItem(mode.toString());
+            modeItem.setEnabled(!isProcessing.get());
+            
+            modeItem.addActionListener(e -> {
                 if (isProcessing.compareAndSet(false, true)) {
-                    // Visual feedback
-                    menuItem1.setEnabled(false);
-
-                    api.logging().logToOutput("Auto Payload Positioner: Processing request...");
-
-                    submitProcessingTask(contextMenuEvent, menuItem1);
+                    selectedMode = mode;
+                    modeItem.setEnabled(false);
+                    api.logging().logToOutput("Auto Payload Positioner: Processing request with mode: " + mode.toString());
+                    submitProcessingTask(contextMenuEvent, modeItem);
                 }
             });
-
-            menuItems.add(menuItem1);
-            return menuItems;
+            
+            menuItems.add(modeItem);
         }
-    }
 
+        return menuItems;
+    }
+}
     private void submitProcessingTask(ContextMenuEvent contextMenuEvent, JMenuItem menuItem) {
         // Create a callable task that will process the request
         Callable<Void> processingTask = () -> {
@@ -110,7 +130,8 @@ public class AutoPayloadPositioner implements BurpExtension {
             } catch (TimeoutException e) {
                 // Cancel the processing task if it times out
                 future.cancel(true);
-                api.logging().logToOutput("Auto Payload Positioner: Processing timed out - request might be too complex");
+                api.logging()
+                        .logToOutput("Auto Payload Positioner: Processing timed out - request might be too complex");
 
                 api.logging().logToError("Processing timed out");
 
@@ -126,7 +147,6 @@ public class AutoPayloadPositioner implements BurpExtension {
         });
     }
 
-
     public void processRequest(ContextMenuEvent contextMenuEvent) {
         try {
             // Getting the request response object using getRequestResponse() method
@@ -137,10 +157,13 @@ public class AutoPayloadPositioner implements BurpExtension {
             List<Range> positions = findPositions(httpRequest);
 
             if (positions.isEmpty()) {
-                return; // if positions are 0 which is very unlikely to happen but somehow if they are 0 then return, this may occur is all payload positions are 0 byte which are not allowed by montoya api
+                return; // if positions are 0 which is very unlikely to happen but somehow if they are 0
+                        // then return, this may occur is all payload positions are 0 byte which are not
+                        // allowed by montoya api
             }
 
-            // constructing a request template to send it to intruder tab, httpRequest is the request to sent along with payload positions locations
+            // constructing a request template to send it to intruder tab, httpRequest is
+            // the request to sent along with payload positions locations
             HttpRequestTemplate httpRequestTemplate = new HttpRequestTemplate() {
                 @Override
                 public burp.api.montoya.core.ByteArray content() {
@@ -162,14 +185,21 @@ public class AutoPayloadPositioner implements BurpExtension {
     }
 
     private HttpRequestResponse getRequestResponse(ContextMenuEvent contextMenuEvent) {
-        List<HttpRequestResponse> selectedItems = contextMenuEvent.selectedRequestResponses(); // apart from repeater this will be used to get request from other tabs likes proxy history tabs
+        List<HttpRequestResponse> selectedItems = contextMenuEvent.selectedRequestResponses(); // apart from repeater
+                                                                                               // this will be used to
+                                                                                               // get request from other
+                                                                                               // tabs likes proxy
+                                                                                               // history tabs
 
         if (!selectedItems.isEmpty()) { // if user has selected multiple requests from logs, select only first one
             return selectedItems.get(0);
         }
 
-        if (contextMenuEvent.isFromTool(ToolType.REPEATER) || contextMenuEvent.isFromTool(ToolType.LOGGER) || contextMenuEvent.isFromTool(ToolType.PROXY) || contextMenuEvent.isFromTool(ToolType.TARGET) || contextMenuEvent.isFromTool(ToolType.SCANNER)) { // handle the repeater request normally
-            MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse().orElse(null);
+        if (contextMenuEvent.isFromTool(ToolType.REPEATER) || contextMenuEvent.isFromTool(ToolType.LOGGER)
+                || contextMenuEvent.isFromTool(ToolType.PROXY) || contextMenuEvent.isFromTool(ToolType.TARGET)
+                || contextMenuEvent.isFromTool(ToolType.SCANNER)) { // handle the repeater request normally
+            MessageEditorHttpRequestResponse repeaterRequestResponse = contextMenuEvent.messageEditorRequestResponse()
+                    .orElse(null);
             if (repeaterRequestResponse != null && repeaterRequestResponse.requestResponse() != null) {
                 return repeaterRequestResponse.requestResponse();
             }
@@ -182,127 +212,154 @@ public class AutoPayloadPositioner implements BurpExtension {
         String requestString = request.toString(); // converting http request into string for parsing
 
         // --- get positions in HTTP method --- //
-        String method = request.method();
-        int methodStart = requestString.indexOf(method);
-        if (methodStart >= 0) {
-            positions.add(Range.range(
-                    methodStart,
-                    methodStart + method.length()
-            ));
+        if (shouldIncludeMethod()) {
+            String method = request.method();
+            int methodStart = requestString.indexOf(method);
+            if (methodStart >= 0) {
+                positions.add(Range.range(
+                        methodStart,
+                        methodStart + method.length()));
+            }
         }
 
         // --- get payload positions for URL path -- //
-        String urlPath = request.pathWithoutQuery();
-        int urlPathStart = requestString.indexOf(urlPath);
-        if (urlPathStart >= 0) {
-            // as montoya api does not allow 0 bytes payload positions we have to set payload position to last directory in url path
-            if (urlPath.endsWith("/")) { // if url path ends with '/', find the second-to-last slash
-                String pathWithoutTrailingSlash = urlPath.substring(0, urlPath.length() - 1); // remove last trailing '/' from url path
-                int secondLastSlashIdx = pathWithoutTrailingSlash.lastIndexOf('/') + 1;
-                int segStart = urlPathStart + secondLastSlashIdx;
-                int segEnd = urlPathStart + urlPath.length() - 1; // Exclude the trailing slash
+        if (shouldIncludeUrlPath()) {
+            String urlPath = request.pathWithoutQuery();
+            int urlPathStart = requestString.indexOf(urlPath);
+            if (urlPathStart >= 0) {
+                if (shouldUseFullUrlPath()) {
+                    // Full URL path
+                    positions.add(Range.range(urlPathStart, urlPathStart + urlPath.length()));
+                } else {
+                    // as montoya api does not allow 0 bytes payload positions we have to set
+                    // payload position to last directory in url path
+                    if (urlPath.endsWith("/")) { // if url path ends with '/', find the second-to-last slash
+                        String pathWithoutTrailingSlash = urlPath.substring(0, urlPath.length() - 1); // remove last
+                                                                                                      // trailing '/'
+                                                                                                      // from url path
+                        int secondLastSlashIdx = pathWithoutTrailingSlash.lastIndexOf('/') + 1;
+                        int segStart = urlPathStart + secondLastSlashIdx;
+                        int segEnd = urlPathStart + urlPath.length() - 1; // Exclude the trailing slash
 
-                if (segStart < segEnd) { // making sure start index of last directory is less than it's ending
-                    positions.add(Range.range(segStart, segEnd));
-                }
-            } else {
-                // for paths not ending with '/'
-                int lastSlashIdx = urlPath.lastIndexOf('/') + 1; // get the starting index of last directory/file in url path
-                int segStart = urlPathStart + lastSlashIdx;
-                int segEnd = urlPathStart + urlPath.length();
+                        if (segStart < segEnd) { // making sure start index of last directory is less than it's ending
+                            positions.add(Range.range(segStart, segEnd));
+                        }
+                    } else {
+                        // for paths not ending with '/'
+                        int lastSlashIdx = urlPath.lastIndexOf('/') + 1; // get the starting index of last
+                                                                         // directory/file in url path
+                        int segStart = urlPathStart + lastSlashIdx;
+                        int segEnd = urlPathStart + urlPath.length();
 
-                if (segStart < segEnd) {
-                    positions.add(Range.range(segStart, segEnd)); // add path payload position in list of payload position
+                        if (segStart < segEnd) {
+                            positions.add(Range.range(segStart, segEnd)); // add path payload position in list of
+                                                                          // payload position
+                        }
+                    }
                 }
             }
         }
 
-        // --- get payload positions for all parameters (URL parameters, POST parameters) -- //
-        for (ParsedHttpParameter param : request.parameters()) {  // Using burp's in-built parameter parser to get the parameters
-            positions.add(Range.range(
-                    param.valueOffsets().startIndexInclusive(), // starting of parameter
-                    param.valueOffsets().endIndexExclusive()     // ending of parameter
-            ));
+        // --- get payload positions for all parameters (URL parameters, POST
+        // parameters) -- //
+        if (shouldIncludeParameters()) {
+            for (ParsedHttpParameter param : request.parameters()) { // Using burp's in-built parameter parser to get
+                                                                     // the parameters
+                positions.add(Range.range(
+                        param.valueOffsets().startIndexInclusive(), // starting of parameter
+                        param.valueOffsets().endIndexExclusive() // ending of parameter
+                ));
+            }
         }
 
-        // --- Process request body to set payload positions in different formats like JSON and XML -- //
-        int requestBodyStart = requestString.indexOf("\r\n\r\n") + 4; // get the starting of the request body
-        if (requestBodyStart > 4 && requestBodyStart < requestString.length()) { // check if there content or not
-            String requestBody = requestString.substring(requestBodyStart); // fetch the request body from whole request
-            String contentType = getContentType(request);
+        // --- Process request body to set payload positions in different formats like
+        // JSON and XML -- //
+        if (shouldIncludeBody()) {
+            int requestBodyStart = requestString.indexOf("\r\n\r\n") + 4; // get the starting of the request body
+            if (requestBodyStart > 4 && requestBodyStart < requestString.length()) { // check if there content or not
+                String requestBody = requestString.substring(requestBodyStart); // fetch the request body from whole
+                                                                                // request
+                String contentType = getContentType(request);
 
-            if (contentType.contains("json") || requestBody.trim().startsWith("{") || requestBody.trim().startsWith("[")) {
-                // --- set payload position for json data --- //
-                processJsonBody(requestBody, requestBodyStart, positions);
-            } else if (contentType.contains("xml") || requestBody.trim().startsWith("<?xml") || requestBody.trim().startsWith("<")) {
-                // --- set payload position for xml data --- //
-                processXmlBody(requestBody, requestBodyStart, positions);
-            } else {
-                // --- try to detect embedded xml or json data in the request body --- //
-                processEmbeddedFormats(requestBody, requestBodyStart, positions);
+                if (contentType.contains("json") || requestBody.trim().startsWith("{")
+                        || requestBody.trim().startsWith("[")) {
+                    // --- set payload position for json data --- //
+                    processJsonBody(requestBody, requestBodyStart, positions);
+                } else if (contentType.contains("xml") || requestBody.trim().startsWith("<?xml")
+                        || requestBody.trim().startsWith("<")) {
+                    // --- set payload position for xml data --- //
+                    processXmlBody(requestBody, requestBodyStart, positions);
+                } else {
+                    // --- try to detect embedded xml or json data in the request body --- //
+                    processEmbeddedFormats(requestBody, requestBodyStart, positions);
+                }
             }
-
         }
 
         // --- set payload positions for headers --- //
-        List<HttpHeader> headers = request.headers();
-        for (HttpHeader header : headers) {
-            String headerLine = header.name() + ": " + header.value();
-            int headerStart = requestString.indexOf(headerLine);
+        if (shouldIncludeHeaders()) {
+            List<HttpHeader> headers = request.headers();
+            for (HttpHeader header : headers) {
+                String headerLine = header.name() + ": " + header.value();
+                int headerStart = requestString.indexOf(headerLine);
 
-            if (headerStart >= 0) {
-                // get the value from header
-                String headerValue = header.value();
-                int valueStart = headerStart + header.name().length() + 2; // +2 for ": "
+                if (headerStart >= 0) {
+                    // get the value from header
+                    String headerValue = header.value();
+                    int valueStart = headerStart + header.name().length() + 2; // +2 for ": "
 
-                // Case 1: Cookies
-                if (header.name().equalsIgnoreCase("Cookie") || header.name().contains("cookie")) {
-                    // split the cookies' key:value pairs
-                    String[] pairs = headerValue.split("; ");
+                    // Case 1: Cookies
+                    if (header.name().equalsIgnoreCase("Cookie") || header.name().contains("cookie")) {
+                        // split the cookies' key:value pairs
+                        String[] pairs = headerValue.split("; ");
 
-                    for (String pair : pairs) {
-                        // find the key=value split
-                        int equalPos = pair.indexOf('=');
-                        if (equalPos > 0 && equalPos < pair.length() - 1) {
-                            String value = pair.substring(equalPos + 1).trim();
+                        for (String pair : pairs) {
+                            // find the key=value split
+                            int equalPos = pair.indexOf('=');
+                            if (equalPos > 0 && equalPos < pair.length() - 1) {
+                                String value = pair.substring(equalPos + 1).trim();
 
-                            // calculate exact position in the request string
-                            int pairStart = headerValue.indexOf(pair);
-                            if (pairStart >= 0) {
-                                int actualValueStart = valueStart + pairStart + equalPos + 1;
-                                int actualValueEnd = actualValueStart + value.length();
+                                // calculate exact position in the request string
+                                int pairStart = headerValue.indexOf(pair);
+                                if (pairStart >= 0) {
+                                    int actualValueStart = valueStart + pairStart + equalPos + 1;
+                                    int actualValueEnd = actualValueStart + value.length();
 
-                                // double-checking the position is withing bounds
-                                if (actualValueStart >= valueStart && actualValueEnd <= headerStart + headerLine.length()) {
-                                    positions.add(Range.range(actualValueStart, actualValueEnd));
+                                    // double-checking the position is withing bounds
+                                    if (actualValueStart >= valueStart
+                                            && actualValueEnd <= headerStart + headerLine.length()) {
+                                        positions.add(Range.range(actualValueStart, actualValueEnd));
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // Case 2: Authorization header
-                else if (header.name().equalsIgnoreCase("Authorization")) {
-                    String[] parts = headerValue.split(" ", 2);
-                    if (parts.length == 2) {
-                        // add position for the auth token partonly
-                        int tokenStart = valueStart + parts[0].length() + 1; // +1 for spac
-                        int tokenEnd = headerStart + headerLine.length();
-                        // --- add the auth header token to payload position --- //
-                        positions.add(Range.range(tokenStart, tokenEnd));
-                    } else { // if for any reason, canno't parse above, fallback to setting payload position to whole header
+                    // Case 2: Authorization header
+                    else if (header.name().equalsIgnoreCase("Authorization")) {
+                        String[] parts = headerValue.split(" ", 2);
+                        if (parts.length == 2) {
+                            // add position for the auth token partonly
+                            int tokenStart = valueStart + parts[0].length() + 1; // +1 for spac
+                            int tokenEnd = headerStart + headerLine.length();
+                            // --- add the auth header token to payload position --- //
+                            positions.add(Range.range(tokenStart, tokenEnd));
+                        } else { // if for any reason, canno't parse above, fallback to setting payload position
+                                 // to whole header
+                            positions.add(Range.range(valueStart, headerStart + headerLine.length()));
+                        }
+                    }
+
+                    // Case 3: normal add the entire header value as a position
+                    else {
                         positions.add(Range.range(valueStart, headerStart + headerLine.length()));
                     }
-                }
-
-                // Case 3: normal add the entire header value as a position
-                else {
-                    positions.add(Range.range(valueStart, headerStart + headerLine.length()));
                 }
             }
         }
 
-        // --- validate positions to ensure no 0 bytes payloads position, no duplicate or overlaps and sort the positions
+        // --- validate positions to ensure no 0 bytes payloads position, no duplicate
+        // or overlaps and sort the positions
         return validatePositions(positions, requestString.length());
     }
 
@@ -370,10 +427,10 @@ public class AutoPayloadPositioner implements BurpExtension {
 
                         // for strings, add payload positions between " " double quoates
                         // if (isString) {
-                        //  positions.add(Range.range(baseOffset + valueStart, baseOffset + valueEnd));
-                        //} else {
+                        // positions.add(Range.range(baseOffset + valueStart, baseOffset + valueEnd));
+                        // } else {
                         positions.add(Range.range(baseOffset + valueStart, baseOffset + valueEnd));
-                        //}
+                        // }
                     }
                 } else if (valueNode.isContainerNode()) {
                     // Recursively process nested objects and arrays
@@ -399,7 +456,8 @@ public class AutoPayloadPositioner implements BurpExtension {
                         // non string primitve values
                         int startIdx = findArrayElementPosition(originalJson, element.toString(), i, false);
                         if (startIdx >= 0) {
-                            positions.add(Range.range(baseOffset + startIdx, baseOffset + startIdx + element.toString().length()));
+                            positions.add(Range.range(baseOffset + startIdx,
+                                    baseOffset + startIdx + element.toString().length()));
                         }
                     }
                 } else if (element.isContainerNode()) {
@@ -410,15 +468,67 @@ public class AutoPayloadPositioner implements BurpExtension {
         }
     }
 
-    // -- helper method to find array element positions in the original JSON string -- //
+    // -- Add helper methods for mode logic -- //
+    private boolean shouldIncludeMethod() {
+        return selectedMode == PayloadPositionMode.EVERYTHING ||
+                selectedMode == PayloadPositionMode.EVERYTHING_FULL_PATH ||
+                selectedMode == PayloadPositionMode.HEADERS_METHOD ||
+                selectedMode == PayloadPositionMode.HEADERS_URL_LAST_METHOD ||
+                selectedMode == PayloadPositionMode.HEADERS_FULL_PATH_METHOD;
+    }
+
+    private boolean shouldIncludeUrlPath() {
+        return selectedMode != PayloadPositionMode.HEADERS_ONLY &&
+                selectedMode != PayloadPositionMode.HEADERS_METHOD;
+    }
+
+    private boolean shouldUseFullUrlPath() {
+        return selectedMode == PayloadPositionMode.DEFAULT_FULL_PATH ||
+                selectedMode == PayloadPositionMode.EVERYTHING_FULL_PATH ||
+                selectedMode == PayloadPositionMode.HEADERS_FULL_PATH ||
+                selectedMode == PayloadPositionMode.HEADERS_FULL_PATH_METHOD;
+    }
+
+    private boolean shouldIncludeParameters() {
+        return selectedMode != PayloadPositionMode.HEADERS_ONLY &&
+                selectedMode != PayloadPositionMode.HEADERS_METHOD &&
+                selectedMode != PayloadPositionMode.HEADERS_URL_LAST &&
+                selectedMode != PayloadPositionMode.HEADERS_URL_LAST_METHOD &&
+                selectedMode != PayloadPositionMode.HEADERS_FULL_PATH &&
+                selectedMode != PayloadPositionMode.HEADERS_FULL_PATH_METHOD;
+    }
+
+    private boolean shouldIncludeBody() {
+        return selectedMode != PayloadPositionMode.HEADERS_ONLY &&
+                selectedMode != PayloadPositionMode.HEADERS_METHOD &&
+                selectedMode != PayloadPositionMode.HEADERS_URL_LAST &&
+                selectedMode != PayloadPositionMode.HEADERS_URL_LAST_METHOD &&
+                selectedMode != PayloadPositionMode.HEADERS_FULL_PATH &&
+                selectedMode != PayloadPositionMode.HEADERS_FULL_PATH_METHOD;
+    }
+
+    private boolean shouldIncludeHeaders() {
+        return selectedMode.name().startsWith("HEADERS") ||
+                selectedMode == PayloadPositionMode.DEFAULT ||
+                selectedMode == PayloadPositionMode.DEFAULT_FULL_PATH ||
+                selectedMode == PayloadPositionMode.EVERYTHING ||
+                selectedMode == PayloadPositionMode.EVERYTHING_FULL_PATH;
+    }
+
+    // -- Add helper methods for mode logic ends -- //
+
+    // -- helper method to find array element positions in the original JSON string
+    // -- //
     private int findArrayElementPosition(String json, String value, int index, boolean isString) {
         Pattern arrayElementPattern;
         if (isString) {
-            arrayElementPattern = Pattern.compile("\\[\\s*(?:[^\\[\\]]*,\\s*){" + index + "}\"([^\"\\\\]*(\\\\.[^\"\\\\]*)*)\""
-                    + (index < Integer.MAX_VALUE - 1 ? "(?:,|\\])" : ""));
+            arrayElementPattern = Pattern
+                    .compile("\\[\\s*(?:[^\\[\\]]*,\\s*){" + index + "}\"([^\"\\\\]*(\\\\.[^\"\\\\]*)*)\""
+                            + (index < Integer.MAX_VALUE - 1 ? "(?:,|\\])" : ""));
         } else {
-            arrayElementPattern = Pattern.compile("\\[\\s*(?:[^\\[\\]]*,\\s*){" + index + "}(" + Pattern.quote(value) + ")"
-                    + (index < Integer.MAX_VALUE - 1 ? "(?:,|\\])" : ""));
+            arrayElementPattern = Pattern
+                    .compile("\\[\\s*(?:[^\\[\\]]*,\\s*){" + index + "}(" + Pattern.quote(value) + ")"
+                            + (index < Integer.MAX_VALUE - 1 ? "(?:,|\\])" : ""));
         }
 
         Matcher matcher = arrayElementPattern.matcher(json);
@@ -429,7 +539,8 @@ public class AutoPayloadPositioner implements BurpExtension {
         return -1;
     }
 
-    // -- backup method, in case jackson library fails to parse json for any reason, use regex for json parsing -- //
+    // -- backup method, in case jackson library fails to parse json for any reason,
+    // use regex for json parsing -- //
     private void fallbackJsonProcessing(String requestBody, int bodyStart, List<Range> positions) {
         try {
             fallbackProcessJsonRecursively(requestBody, 0, bodyStart, positions, 0);
@@ -439,8 +550,10 @@ public class AutoPayloadPositioner implements BurpExtension {
     }
 
     // -- backup method to process json recursively -- //
-    private void fallbackProcessJsonRecursively(String json, int startInJson, int baseOffset, List<Range> positions, int depth) {
-        if (depth > 1) return; // prevent too deep recursion to prevent crash
+    private void fallbackProcessJsonRecursively(String json, int startInJson, int baseOffset, List<Range> positions,
+            int depth) {
+        if (depth > 1)
+            return; // prevent too deep recursion to prevent crash
 
         // Pattern for basic JSON Key-value pairs
         Pattern keyPattern = Pattern.compile("\"([^\"]+)\"\\s*:");
@@ -482,15 +595,19 @@ public class AutoPayloadPositioner implements BurpExtension {
     }
 
     // -- process json array -- //
-    private void processJsonArray(String json, int startPos, int endPos, int baseOffset, List<Range> positions, int depth) {
-        if (depth > 1) return; // avoid deep recursion to prevent crash
+    private void processJsonArray(String json, int startPos, int endPos, int baseOffset, List<Range> positions,
+            int depth) {
+        if (depth > 1)
+            return; // avoid deep recursion to prevent crash
 
         // array element detection logic
         int pos = startPos;
         while (pos < endPos) {
             // skip whitespace
-            while (pos < endPos && Character.isWhitespace(json.charAt(pos))) pos++;
-            if (pos >= endPos) break;
+            while (pos < endPos && Character.isWhitespace(json.charAt(pos)))
+                pos++;
+            if (pos >= endPos)
+                break;
 
             char c = json.charAt(pos);
             switch (c) {
@@ -541,7 +658,7 @@ public class AutoPayloadPositioner implements BurpExtension {
         }
     }
 
-    // -- helper method to find matching close brace  -- //
+    // -- helper method to find matching close brace -- //
     private int findMatchingCloseBrace(String json, int openPos) {
         int depth = 1;
         int pos = openPos + 1;
@@ -608,7 +725,8 @@ public class AutoPayloadPositioner implements BurpExtension {
     private void processXmlBody(String requestBody, int requestBodyStart, List<Range> positions) {
         try {
             // xml parsing for tab based content
-            Pattern tagPattern = Pattern.compile("<([^\\s/>]+)[^>]*>(.*?)</\\1>|<([^\\s/>]+)\\s+([^>]*)/>|<([^\\s/>]+)[^>]*>([^<]*)</\\5>");
+            Pattern tagPattern = Pattern
+                    .compile("<([^\\s/>]+)[^>]*>(.*?)</\\1>|<([^\\s/>]+)\\s+([^>]*)/>|<([^\\s/>]+)[^>]*>([^<]*)</\\5>");
             Matcher matcher = tagPattern.matcher(requestBody);
 
             while (matcher.find()) {
@@ -621,12 +739,12 @@ public class AutoPayloadPositioner implements BurpExtension {
                 else if (matcher.group(1) != null) {
                     String content = matcher.group(2);
 
-                    // Add position for tag content if it's not empty and doesn't contain nested tags
+                    // Add position for tag content if it's not empty and doesn't contain nested
+                    // tags
                     if (!content.trim().isEmpty() && !content.contains("<")) {
                         positions.add(Range.range(
                                 requestBodyStart + matcher.start(2),
-                                requestBodyStart + matcher.end(2)
-                        ));
+                                requestBodyStart + matcher.end(2)));
                     }
 
                     // process attributes in opening tag
@@ -636,7 +754,8 @@ public class AutoPayloadPositioner implements BurpExtension {
                         int attrStart = openingTag.indexOf(' ');
                         if (attrStart > 0) {
                             String attributes = openingTag.substring(attrStart + 1);
-                            processXmlAttributes(attributes, matcher.start() + attrStart + 1 + requestBodyStart, positions);
+                            processXmlAttributes(attributes, matcher.start() + attrStart + 1 + requestBodyStart,
+                                    positions);
                         }
                     }
 
@@ -651,8 +770,7 @@ public class AutoPayloadPositioner implements BurpExtension {
                     if (!content.trim().isEmpty()) {
                         positions.add(Range.range(
                                 requestBodyStart + matcher.start(6),
-                                requestBodyStart + matcher.end(6)
-                        ));
+                                requestBodyStart + matcher.end(6)));
                     }
                 }
             }
@@ -672,8 +790,7 @@ public class AutoPayloadPositioner implements BurpExtension {
             int valueEnd = matcher.end(3);
             positions.add(Range.range(
                     baseOffset + valueStart,
-                    baseOffset + valueEnd
-            ));
+                    baseOffset + valueEnd));
         }
     }
 
@@ -711,8 +828,7 @@ public class AutoPayloadPositioner implements BurpExtension {
         while (keyValueMatcher.find()) {
             positions.add(Range.range(
                     requestBodyStart + keyValueMatcher.start(2),
-                    requestBodyStart + keyValueMatcher.end(2)
-            ));
+                    requestBodyStart + keyValueMatcher.end(2)));
         }
     }
 
