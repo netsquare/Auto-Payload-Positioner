@@ -42,7 +42,9 @@ Watch the demo!
   
   - Header values (Cookie, Authorization, and all other headers)
 
-  - JSON bodies (keys, values, nested objects/arrays)
+  - JSON bodies (values, nested objects/arrays, repeated values)
+
+  - Embedded JSON inside JSON strings (JSON-in-string)
 
   - XML bodies (tag content, attributes)
 
@@ -85,9 +87,9 @@ https://github.com/user-attachments/assets/30e1e4a9-6105-4e89-8d4a-3e125360dfc4
 
   - Select your downloaded JAR.
 
-  - Confirm & ensure Simple Payload Positioner appears in the list.
+  - Confirm & ensure Auto Payload Positioner appears in the list.
 
-  - Verify, In the Extender output tab, look for: `Simple Payload Positioner loaded successfully!`
+  - Verify, in the Extender output tab, look for: `Auto Payload Positioner loaded Successfully!`
 
 ## 3. Usage
 
@@ -110,12 +112,46 @@ https://github.com/user-attachments/assets/30e1e4a9-6105-4e89-8d4a-3e125360dfc4
 
 - Switch to Intruder, review the auto-populated payload positions, and launch your attack.
 
+## Embedded JSON and Empty Values
+
+### Embedded JSON (JSON inside a JSON string)
+
+If a JSON field contains an escaped JSON document, the extension will place insertion points inside the embedded JSON too.
+
+Example:
+```json
+{"embedded":"{\"json\":\"thisisembedded\",\"key\":1}"}
+```
+
+Expected insertion points include:
+- `thisisembedded`
+- `1`
+
+### Empty values and `__DELETE_ME__` placeholder
+
+Newer Burp Montoya API versions do not allow zero-length insertion points. To support empty values like `data=` or `{\"data\":\"\"}`, the extension inserts a placeholder marker so Intruder has a valid non-zero range to target.
+
+Example (plain/form/query-style):
+- Input: `data=&x=1`
+- Sent to Intruder as: `data=__DELETE_ME__&x=1`
+
+Example (JSON empty string):
+```json
+{"data":"","ok":"yes"}
+```
+Sent to Intruder as:
+```json
+{"data":"__DELETE_ME__","ok":"yes"}
+```
+
+Tip: `__DELETE_ME__` is intentionally obvious so you can remove it after targeting it.
+
 ## Building from Source
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/simple-payload-positioner.git
-cd simple-payload-positioner
+git clone https://github.com/netsquare/Auto-Payload-Positioner.git
+cd Auto-Payload-Positioner
 
 # (Maven)
 mvn clean package
@@ -124,6 +160,10 @@ The built JAR will be in target/
 
 Load that JAR in Burp as described above.
 ```
+
+## Testing / Regression Checklist
+
+See `tests.md` for copy/paste test cases and expected insertion points (JSON, embedded JSON, XML, key=value, `__DELETE_ME__`).
 
 ## To report bugs, issues, feature suggestion, Performance issue, general question, Documentation issue.
  - Kindly open an issue with respective template.
