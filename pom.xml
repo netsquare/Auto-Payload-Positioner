@@ -6,13 +6,13 @@
 
     <groupId>com.netsquare</groupId>
     <artifactId>AutoPayloadPositioner</artifactId>
-    <version>v1.0.0</version>
+    <version>v3.0.0</version>
 
     <dependencies>
         <dependency>
             <groupId>net.portswigger.burp.extensions</groupId>
             <artifactId>montoya-api</artifactId>
-            <version>2025.4</version>
+            <version>2026.2</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
